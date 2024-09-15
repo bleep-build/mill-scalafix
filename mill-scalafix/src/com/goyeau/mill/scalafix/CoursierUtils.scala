@@ -1,25 +1,25 @@
-package com.goyeau.mill.scalafix
+package bleep.plugin.scalafix
 
-import coursier.Repository
-import coursier.ivy.IvyRepository
-import coursier.maven.MavenRepository
+import bleep.{constants, model}
 import coursier.core.Authentication
-import mill.scalalib.{CrossVersion, Dep}
 
 object CoursierUtils {
-  def toApiRepository(repo: Repository): coursierapi.Repository =
+  def toApiRepositories(repos: List[model.Repository], bleepConfig: model.BleepConfig): List[coursierapi.Repository] =
+    (repos ++ constants.DefaultRepos).map(r => toApiRepository(r, bleepConfig))
+
+  def toApiRepository(repo: model.Repository, bleepConfig: model.BleepConfig): coursierapi.Repository =
     repo match {
-      case mvn: MavenRepository =>
-        val credentialsOpt = mvn.authentication.map(toApiCredentials)
+      case mvn: model.Repository.Maven =>
+        val authentication: Option[Authentication] = bleepConfig.authentications.flatMap(_.configs.get(mvn.uri))
+        val credentialsOpt = authentication.map(toApiCredentials)
         coursierapi.MavenRepository
-          .of(mvn.root)
+          .of(mvn.uri.toString)
           .withCredentials(credentialsOpt.orNull)
-      case ivy: IvyRepository =>
-        val credentialsOpt = ivy.authentication.map(toApiCredentials)
-        val mdPatternOpt   = ivy.metadataPatternOpt.map(_.string)
+      case ivy: model.Repository.Ivy =>
+        val authentication: Option[Authentication] = bleepConfig.authentications.flatMap(_.configs.get(ivy.uri))
+        val credentialsOpt = authentication.map(toApiCredentials)
         coursierapi.IvyRepository
-          .of(ivy.pattern.string)
-          .withMetadataPattern(mdPatternOpt.orNull)
+          .of(ivy.uri.toString)
           .withCredentials(credentialsOpt.orNull)
       case other =>
         throw new Exception(s"Unrecognized repository: " + other)
@@ -28,13 +28,6 @@ object CoursierUtils {
   def toApiCredentials(auth: Authentication): coursierapi.Credentials =
     coursierapi.Credentials.of(auth.user, auth.passwordOpt.getOrElse(""))
 
-  def toCoordinates(dep: Dep): String =
-    dep.cross match {
-      case CrossVersion.Constant(value, _) =>
-        s"${dep.dep.module.organization.value}:${dep.dep.module.name.value}$value:${dep.dep.version}"
-      case CrossVersion.Binary(_) =>
-        s"${dep.dep.module.organization.value}::${dep.dep.module.name.value}:${dep.dep.version}"
-      case CrossVersion.Full(_) =>
-        s"${dep.dep.module.organization.value}:::${dep.dep.module.name.value}:${dep.dep.version}"
-    }
+  def toCoordinates(dep: model.Dep): String =
+    dep.repr
 }

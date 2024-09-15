@@ -1,106 +1,94 @@
-package com.goyeau.mill.scalafix
+package bleep.plugin.scalafix
 
-import com.goyeau.mill.scalafix.ScalafixModule.{filesToFix, fixAction}
-import coursier.Repository
-import mill.{Agg, T}
-import mill.api.{Logger, PathRef, Result}
-import mill.scalalib.{Dep, ScalaModule}
-import mill.define.Command
-
+import bleep.logging.Logger
+import bleep.{Started, fixedClasspath, model}
 import scalafix.interfaces.Scalafix
 import scalafix.interfaces.ScalafixError.*
-import scala.compat.java8.OptionConverters.*
+
+import java.nio.file.{Files, Path}
 import scala.jdk.CollectionConverters.*
+import scala.jdk.OptionConverters.{RichOption, RichOptional}
 
-trait ScalafixModule extends ScalaModule {
-  def scalafixConfig: T[Option[os.Path]]    = T(None)
-  def scalafixIvyDeps: T[Agg[Dep]]          = Agg.empty[Dep]
-  def scalafixScalaBinaryVersion: T[String] = "2.12"
+class ScalafixPlugin(
+    started: Started,
+    scalafixConfig: Option[Path] = None,
+    scalafixIvyDeps: List[model.Dep] = Nil
+) {
 
-  /** Run Scalafix.
-    */
-  def fix(args: String*): Command[Unit] =
-    T.command {
-      fixAction(
-        T.ctx().log,
-        repositoriesTask(),
-        filesToFix(sources()).map(_.path),
-        classpath = (compileClasspath() ++ localClasspath() ++ Seq(semanticDbData())).iterator.toSeq.map(_.path),
-        scalaVersion(),
-        scalafixScalaBinaryVersion(),
-        scalacOptions(),
-        scalafixIvyDeps(),
-        scalafixConfig(),
-        args,
-        T.workspace
-      )
+  def fix(projects: List[model.CrossProjectName], args: List[String]): Unit = {
+
+    val repos: List[coursierapi.Repository] =
+      CoursierUtils.toApiRepositories(started.build.resolvers.values, started.config)
+
+    lazy val scalafix: Scalafix = Scalafix.fetchAndClassloadInstance("2.13", repos.asJava)
+
+    projects.foreach { crossName =>
+      started.build.explodedProjects(crossName).scala.flatMap(_.version) match {
+        case Some(scalaVersion) =>
+          started.logger.info(s"Running Scalafix for ${crossName.value}")
+
+          val sources: Seq[Path] =
+            ScalafixModule.filesToFix(started.projectPaths(crossName).sourcesDirs.all.toList)
+
+          val project = started.bloopProject(crossName)
+
+          ScalafixModule.fixAction(
+            scalafix = scalafix,
+            log = started.logger,
+            repos = repos,
+            sources = sources,
+            classpath = fixedClasspath(project),
+            scalaVersion = scalaVersion.scalaVersion,
+            scalacOptions = project.scala.toList.flatMap(_.options),
+            scalafixIvyDeps = scalafixIvyDeps,
+            scalafixConfig = scalafixConfig,
+            args = args,
+            wd = started.buildPaths.buildDir
+          )
+        case None => started.logger.error(s"Cannot run Scalafix on project with no Scala version: ${crossName.value}")
+      }
     }
+  }
 }
 
 object ScalafixModule {
   def fixAction(
+      scalafix: Scalafix,
       log: Logger,
-      repositories: Seq[Repository],
-      sources: Seq[os.Path],
-      classpath: Seq[os.Path],
+      repos: List[coursierapi.Repository],
+      sources: Seq[Path],
+      classpath: Seq[Path],
       scalaVersion: String,
-      scalaBinaryVersion: String,
       scalacOptions: Seq[String],
-      scalafixIvyDeps: Agg[Dep],
-      scalafixConfig: Option[os.Path],
-      args: String*
-  ): Result[Unit] = fixAction(
-    log,
-    repositories,
-    sources,
-    classpath,
-    scalaVersion,
-    scalaBinaryVersion,
-    scalacOptions,
-    scalafixIvyDeps,
-    scalafixConfig,
-    args,
-    os.pwd
-  )
-
-  def fixAction(
-      log: Logger,
-      repositories: Seq[Repository],
-      sources: Seq[os.Path],
-      classpath: Seq[os.Path],
-      scalaVersion: String,
-      scalaBinaryVersion: String,
-      scalacOptions: Seq[String],
-      scalafixIvyDeps: Agg[Dep],
-      scalafixConfig: Option[os.Path],
+      scalafixIvyDeps: List[model.Dep],
+      scalafixConfig: Option[Path],
       args: Seq[String],
-      wd: os.Path
-  ): Result[Unit] =
+      wd: Path
+  ): Either[String, Unit] =
     if (sources.nonEmpty) {
-      val scalafix = Scalafix
-        .fetchAndClassloadInstance(scalaBinaryVersion, repositories.map(CoursierUtils.toApiRepository).asJava)
+      val configured = scalafix
         .newArguments()
         .withParsedArguments(args.asJava)
-        .withWorkingDirectory(wd.toNIO)
-        .withConfig(scalafixConfig.map(_.toNIO).asJava)
-        .withClasspath(classpath.map(_.toNIO).asJava)
+        .withWorkingDirectory(wd)
+        .withConfig(scalafixConfig.toJava)
+        .withClasspath(classpath.asJava)
         .withScalaVersion(scalaVersion)
         .withScalacOptions(scalacOptions.asJava)
-        .withPaths(sources.map(_.toNIO).asJava)
+        .withPaths(sources.asJava)
         .withToolClasspath(
           Seq.empty.asJava,
           scalafixIvyDeps.map(CoursierUtils.toCoordinates).iterator.toSeq.asJava,
-          repositories.map(CoursierUtils.toApiRepository).asJava
+          repos.asJava
         )
 
-      log.info(s"Rewriting and linting ${sources.size} Scala sources against ${scalafix.rulesThatWillRun.size} rules")
-      val errors = scalafix.run()
-      if (errors.isEmpty) Result.Success(())
+      log.info(s"Rewriting and linting ${sources.size} Scala sources against rules: ${configured.rulesThatWillRun.asScala.mkString(", ")}")
+      val errors = configured.run()
+      if (errors.isEmpty) Right(())
       else {
         val errorMessages = errors.map {
           case ParseError => "A source file failed to be parsed"
           case CommandLineError =>
-            scalafix.validate().asScala.fold("A command-line argument was parsed incorrectly")(_.getMessage)
+            configured.validate().toScala.fold("A command-line argument was parsed incorrectly")(_.getMessage)
           case MissingSemanticdbError =>
             "A semantic rewrite was run on a source file that has no associated META-INF/semanticdb/.../*.semanticdb"
           case StaleSemanticdbError =>
@@ -112,15 +100,12 @@ object ScalafixModule {
           case NoFilesError => "No files were provided to Scalafix so nothing happened"
           case _            => "Something unexpected happened running Scalafix"
         }
-        Result.Failure(errorMessages.mkString("\n"))
+        Left(errorMessages.mkString("\n"))
       }
-    } else Result.Success(())
+    } else Right(())
 
-  def filesToFix(sources: Seq[PathRef]): Seq[PathRef] =
-    for {
-      pathRef <- sources if os.exists(pathRef.path)
-      file <-
-        if (os.isDir(pathRef.path)) os.walk(pathRef.path).filter(file => os.isFile(file) && (file.ext == "scala"))
-        else Seq(pathRef.path)
-    } yield PathRef(file)
+  def filesToFix(sources: Seq[Path]): Seq[Path] =
+    sources.filter(p => p.toFile.exists() && Files.isDirectory(p)).flatMap { path =>
+      Files.walk(path).iterator().asScala.filter(p => Files.isRegularFile(p) && p.toString.endsWith(".scala"))
+    }
 }
