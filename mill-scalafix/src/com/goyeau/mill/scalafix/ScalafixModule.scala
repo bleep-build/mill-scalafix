@@ -1,7 +1,7 @@
 package bleep.plugin.scalafix
 
-import bleep.logging.Logger
 import bleep.{Started, fixedClasspath, model}
+import ryddig.Logger
 import scalafix.interfaces.Scalafix
 import scalafix.interfaces.ScalafixError.*
 
