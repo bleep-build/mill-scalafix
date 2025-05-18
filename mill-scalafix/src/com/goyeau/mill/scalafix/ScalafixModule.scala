@@ -37,7 +37,7 @@ class ScalafixPlugin(
             log = started.logger,
             repos = repos,
             sources = sources,
-            classpath = fixedClasspath(project),
+            classpath = fixedClasspath(project, true),
             scalaVersion = scalaVersion.scalaVersion,
             scalacOptions = project.scala.toList.flatMap(_.options),
             scalafixIvyDeps = scalafixIvyDeps,
