@@ -30,16 +30,16 @@ class ScalafixPlugin(
           val sources: Seq[Path] =
             ScalafixModule.filesToFix(started.projectPaths(crossName).sourcesDirs.all.toList)
 
-          val project = started.bloopProject(crossName)
+          val project = started.resolvedProject(crossName)
 
           ScalafixModule.fixAction(
             scalafix = scalafix,
             log = started.logger,
             repos = repos,
             sources = sources,
-            classpath = fixedClasspath(project, true),
+            classpath = fixedClasspath(project),
             scalaVersion = scalaVersion.scalaVersion,
-            scalacOptions = project.scala.toList.flatMap(_.options),
+            scalacOptions = project.scalaConfig.toList.flatMap(_.options),
             scalafixIvyDeps = scalafixIvyDeps,
             scalafixConfig = scalafixConfig,
             args = args,
