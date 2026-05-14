@@ -1,6 +1,6 @@
 package bleep.plugin.scalafix
 
-import bleep.{Started, fixedClasspath, model}
+import bleep.{fixedClasspath, model, Started}
 import ryddig.Logger
 import scalafix.interfaces.Scalafix
 import scalafix.interfaces.ScalafixError.*
@@ -86,7 +86,7 @@ object ScalafixModule {
       if (errors.isEmpty) Right(())
       else {
         val errorMessages = errors.map {
-          case ParseError => "A source file failed to be parsed"
+          case ParseError       => "A source file failed to be parsed"
           case CommandLineError =>
             configured.validate().toScala.fold("A command-line argument was parsed incorrectly")(_.getMessage)
           case MissingSemanticdbError =>
