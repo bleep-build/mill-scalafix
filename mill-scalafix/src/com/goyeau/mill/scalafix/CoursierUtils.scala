@@ -27,7 +27,12 @@ object CoursierUtils {
     }
 
   def toApiCredentials(auth: Authentication): coursierapi.Credentials =
-    coursierapi.Credentials.of(auth.user, auth.passwordOpt.getOrElse(""))
+    // coursier 2.1.25 made the user optional. `coursierapi.Credentials` has no such notion, and credentials with no user are useless here, so fail loudly.
+    // `Authentication.toString` masks the password.
+    coursierapi.Credentials.of(
+      auth.userOpt.getOrElse(sys.error(s"Repository credentials without a user: $auth")),
+      auth.passwordOpt.getOrElse("")
+    )
 
   def toCoordinates(dep: model.Dep): String =
     dep.repr
